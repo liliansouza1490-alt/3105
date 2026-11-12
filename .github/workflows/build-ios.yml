@@ -7,16 +7,17 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Confirm Xcode 26 and iOS 26 SDK
+      - name: Confirm Xcode 27 and iOS 27 SDK
         run: |
+          set -euo pipefail
           xcodebuild -version
-          xcodebuild -showsdks | grep -E 'iOS|iphoneos' || true
+          xcodebuild -showsdks | grep -E 'iOS 27|iphoneos27'
 
       - name: Extract project from zip
         run: |
@@ -45,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           TOKEN="${PATCH_SYNC_TOKEN:-}"
-          if [ -z "\( TOKEN" ] || [ " \){#TOKEN}" -lt 64 ]; then
+          if [ -z "$TOKEN" ] || [ "${#TOKEN}" -lt 64 ]; then
             echo "Secret ausente — usando token dummy so pro build"
             TOKEN="dummy_patch_sync_token_for_ci_build_only_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           fi
