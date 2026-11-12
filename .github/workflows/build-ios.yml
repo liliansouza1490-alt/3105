@@ -1,0 +1,111 @@
+name: Build iOS app - X
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Confirm Xcode 26 and iOS 26 SDK
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -E 'iOS|iphoneos' || true
+
+      - name: Extract project from zip
+        run: |
+          set -euo pipefail
+          ls -la
+          ZIP=$(ls *.zip 2>/dev/null | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "::error::Nenhum .zip encontrado na raiz do repo"
+            exit 1
+          fi
+          echo "Extraindo $ZIP ..."
+          unzip -q "$ZIP" -d extracted
+          PROJ_DIR=$(find extracted -name "*.xcodeproj" -type d | head -1 | xargs dirname)
+          if [ -z "$PROJ_DIR" ]; then
+            echo "::error::Nao achei .xcodeproj dentro do zip"
+            find extracted -maxdepth 3 -type d
+            exit 1
+          fi
+          echo "Projeto em: $PROJ_DIR"
+          echo "PROJ_DIR=$PROJ_DIR" >> $GITHUB_ENV
+          ls -la "$PROJ_DIR"
+
+      - name: Prepare patch sync token (optional)
+        env:
+          PATCH_SYNC_TOKEN: ${{ secrets.PATCH_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          TOKEN="${PATCH_SYNC_TOKEN:-}"
+          if [ -z "\( TOKEN" ] || [ " \){#TOKEN}" -lt 64 ]; then
+            echo "Secret ausente — usando token dummy so pro build"
+            TOKEN="dummy_patch_sync_token_for_ci_build_only_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          fi
+          umask 077
+          echo "PATCH_SYNC_TOKEN = $TOKEN" > "$RUNNER_TEMP/patch-sync-token.xcconfig"
+          chmod 600 "$RUNNER_TEMP/patch-sync-token.xcconfig"
+
+      - name: List schemes
+        working-directory: ${{ env.PROJ_DIR }}
+        run: |
+          xcodebuild -list -project ThreeOneOSFive.xcodeproj || xcodebuild -list
+
+      - name: Build unsigned Release app
+        working-directory: ${{ env.PROJ_DIR }}
+        run: |
+          set -euo pipefail
+          SCHEME="3105"
+          if ! xcodebuild -project ThreeOneOSFive.xcodeproj -scheme "$SCHEME" -showBuildSettings >/dev/null 2>&1; then
+            SCHEME="ThreeOneOSFive"
+          fi
+          if ! xcodebuild -project ThreeOneOSFive.xcodeproj -scheme "$SCHEME" -showBuildSettings >/dev/null 2>&1; then
+            SCHEME=$(xcodebuild -project ThreeOneOSFive.xcodeproj -list 2>/dev/null | sed -n '/Schemes:/,$p' | tail -n +2 | head -1 | xargs)
+          fi
+          echo "Usando scheme: $SCHEME"
+          xcodebuild \
+            -project ThreeOneOSFive.xcodeproj \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -xcconfig "$RUNNER_TEMP/patch-sync-token.xcconfig" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "==== tail do log ===="
+            tail -80 "$RUNNER_TEMP/xcodebuild.log"
+            exit 1
+          fi
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find "$RUNNER_TEMP/DerivedData/Build/Products" -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::Nenhum .app encontrado apos o build"
+            find "$RUNNER_TEMP/DerivedData" -maxdepth 5 -type d || true
+            exit 1
+          fi
+          echo "App: $APP_PATH"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$RUNNER_TEMP/X.ipa" Payload)
+          ls -lh "$RUNNER_TEMP/X.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: x-ios-ipa
+          path: ${{ runner.temp }}/X.ipa
+          if-no-files-found: error
+          retention-days: 14
